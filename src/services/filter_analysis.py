@@ -5,16 +5,16 @@ Spectral S-parameter analysis of a 3-resonator parametric bandpass filter.
 
 The filter topology is::
 
-    Port1 – J25 – R5 – J56 – R6 – J56 – R7 – J25 – Port2
+    Port1 – J12 – R1 – J23 – R2 – J23 – R3 – J12 – Port2
 
 where:
-  * R5, R6, R7  are shunt LC resonators with sinusoidally modulated
+  * R1, R2, R3  are shunt LC resonators with sinusoidally modulated
                 capacitances (phase-shifted between resonators).
-  * J25, J56    are ideal J-inverters (admittance inverters).
+  * J12, J23    are ideal J-inverters (admittance inverters).
 
 Public API
 ----------
-Compute_Inverters(BW_MHz, f0_GHz, C0_F, M12, M23) -> (M25, M56)
+Compute_Inverters(BW_MHz, f0_GHz, C0_F, M12, M23) -> (J12, J23)
     Compute the J-inverter coupling values from the normalised coupling-matrix
     coefficients and filter parameters.
 
@@ -23,10 +23,14 @@ compute_S_parameters(f0_GHz, BW_MHz, M12, M23, C0_F, Nhar, fm, m, delta,
     Full spectral S-parameter sweep.
 """
 
+import logging
+
 import numpy as np
 
 from src.services import spectral_network as sn
 from src.services import network_calculations as nc
+
+logger = logging.getLogger(__name__)
 
 
 # ── Helper: J-inverter values ─────────────────────────────────────────────────
@@ -181,12 +185,12 @@ def compute_S_parameters(
     # ── Pre-compute frequency-independent quantities ──────────────────────
     w0 = 2.0 * np.pi * f0_GHz * 1e9          # carrier angular frequency [rad/s]
     L = 1.0 / (w0**2 * C0_F)                  # resonator inductance [H]
-    print(f"C0 = {C0_F:.3e} F, L = {L:.3e} H")
+    logger.debug("C0 = %.3e F, L = %.3e H", C0_F, L)
 
     M25, M56 = Compute_Inverters(
         BW_MHz=BW_MHz, f0_GHz=f0_GHz, C0_F=C0_F, M12=M12, M23=M23
     )
-    print(f"M25 = {M25:.3e} (J-inverter coupling), M56 = {M56:.3e}")
+    logger.debug("J12 (M25) = %.3e, J23 (M56) = %.3e", M25, M56)
 
     # ── Output arrays ─────────────────────────────────────────────────────
     S11 = np.full(len(fGHz), np.nan, dtype=complex)
@@ -200,21 +204,21 @@ def compute_S_parameters(
 
         try:
             # Spectral admittance of each shunt resonator
-            YLC5 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[0])
-            YLC6 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[1])
-            YLC7 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[2])
+            YLC1 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[0])
+            YLC2 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[1])
+            YLC3 = sn.YLC_spectral(w, wm, m, L, C0_F, Nhar, phi[2])
 
-            # J-inverter ABCD blocks: [0, 1/M; M, 0]
-            J25 = {"A": 0.0 * U, "B": U / M25, "C": U * M25, "D": 0.0 * U}
-            J56 = {"A": 0.0 * U, "B": U / M56, "C": U * M56, "D": 0.0 * U}
+            # J-inverter ABCD blocks: [0, 1/J; J, 0]
+            J12 = {"A": 0.0 * U, "B": U / M25, "C": U * M25, "D": 0.0 * U}
+            J23 = {"A": 0.0 * U, "B": U / M56, "C": U * M56, "D": 0.0 * U}
 
             # Shunt-resonator ABCD blocks: [1, 0; Y, 1]
-            R5 = {"A": U, "B": 0.0 * U, "C": YLC5, "D": U}
-            R6 = {"A": U, "B": 0.0 * U, "C": YLC6, "D": U}
-            R7 = {"A": U, "B": 0.0 * U, "C": YLC7, "D": U}
+            R1 = {"A": U, "B": 0.0 * U, "C": YLC1, "D": U}
+            R2 = {"A": U, "B": 0.0 * U, "C": YLC2, "D": U}
+            R3 = {"A": U, "B": 0.0 * U, "C": YLC3, "D": U}
 
-            # Topology: J25 – R5 – J56 – R6 – J56 – R7 – J25
-            At, Bt, Ct, Dt = sn.block_chain([J25, R5, J56, R6, J56, R7, J25])
+            # Topology: J12 – R1 – J23 – R2 – J23 – R3 – J12
+            At, Bt, Ct, Dt = sn.block_chain([J12, R1, J23, R2, J23, R3, J12])
 
             S = nc.A_to_S(At, Bt, Ct, Dt, Rs, RL)
 
@@ -225,7 +229,10 @@ def compute_S_parameters(
             S12[idx] = S["S12"][fund_idx, fund_idx]
 
         except np.linalg.LinAlgError:
-            pass  # leave as NaN → interpolated below
+            logger.warning(
+                "Singular matrix at f=%.6f GHz (idx=%d); point left as NaN.",
+                f, idx,
+            )  # NaN remains → interpolated below
 
     # ── Interpolate singular / NaN points ────────────────────────────────
     S11 = _fill_nan_interp(S11)
